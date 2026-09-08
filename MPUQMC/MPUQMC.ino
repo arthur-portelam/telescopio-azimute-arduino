@@ -14,16 +14,14 @@ const float SENS_ACCEL = 16384.0; // Escala +/- 2g
 const float SENS_GYRO  = 131.0;   // Escala +/- 250 °/s 
 //const float RAD_TO_DEG = 57.2957;
 //const float DEG_TO_RAD = 0.01745329;
-const float declinacao = -23.0;        // Declinação magnética da cidade
+const float declinacao = 0.0 ;        // Declinação magnética da cidade -23.0, se deixar em 0 mostra a magnética
 const float DEADBAND = 1.0;     //Margem de erro tolerada em graus 
 const float TOLERANCIA_AZIMUTE = 3.0; // Margem de erro aceitável (em graus)
 const float TOLERANCIA_PITCH = 2.0; // Margem de erro para altitude
-const float azimute_alvo = 90.0; // "posição x" externa
+float azimute_alvo = 0.0; // "posição x" externa
 float pitch_alvo = 0.0;  // Inclinação alvo
 float pitch_estavel = 0.0;    
-float altura_alvo = 20.0; 
-float altura_atual = 20.0;
-float distancia_horizontal = 300.0;
+
 
 // Variáveis para rastrear os extremos do QMC
 int16_t mx_min = 32767, mx_max = -32768;
@@ -40,13 +38,14 @@ float scale_z = 1.0;
 
 
 //---VARIAVEIS PARA CALOIBRAÇÃO DO MPU--- 
+  
+float offsetGX = -2.828792;
+float offsetGY = 0.603373;
+float offsetGZ = -0.428433;
 
-float offsetGX = 0;
-float offsetGY = 0;
-float offsetGZ = 0; 
-float offsetAX =0;
-float offsetAY =0;
-float offsetAZ =0;  
+float offsetAX = -0.017621;
+float offsetAY = 0.010805;
+float offsetAZ = -0.033458;
 
 // --- VARIÁVEIS DE ESTADO --- 
 float azimute_filtrado = 0.0;
@@ -64,7 +63,6 @@ unsigned long tempo_ultima_impressao = 0;
 void lerQMC(int16_t &mx, int16_t &my, int16_t &mz);
 void lerMPU(float &ax, float &ay, float &az, float &gx, float &gy, float &gz);
 float diferencaAngular(float alvo, float atual);
-void calcularPitchAlvo();
 void navegarParaAlvo();
 void navegarParaAltitude();
 void calibrarMPU(int amostras);
@@ -105,12 +103,13 @@ void setup(){
 
   delay(500);
 
-  Serial.println("=== CALIBRACAO INICIANDO DO MPU ===");
-  calibrarMPU(2000);
+  //Serial.println("=== CALIBRACAO INICIANDO DO MPU ===");
+  //calibrarMPU(2000);
 
   
 
-  Serial.println("=== CALIBRACAO INICIANDO DO QMC===");
+  Serial.println("Prepare-se: a calibracao vai comecar em 5 segundos.");
+  delay(5000);
   Serial.println("Gire o sensor em todas as direcoes!");
   calibrarQMC();
 
@@ -120,6 +119,8 @@ void setup(){
 }
 
 void loop() {
+
+
   unsigned long tempo_atual = micros();
   float dt = (tempo_atual - tempo_ultimo_ciclo) / 1000000.0;
   if (dt <= 0 || dt > 0.1) dt = 0.01;
@@ -180,13 +181,12 @@ void loop() {
   }
 
 //Inlcinação alvo
-  calcularPitchAlvo();
 
   navegarParaAlvo();
   navegarParaAltitude();
 
 
-  if (millis() - tempo_ultima_impressao >= 100) {
+  if (millis() - tempo_ultima_impressao >= 500) {
 
     float erro_direcao = diferencaAngular(azimute_alvo, azimute_estavel);
     float erro_pitch = calcularErroPitch(pitch_alvo, pitch_estavel);
@@ -211,6 +211,7 @@ void loop() {
 
     Serial.print(" | Roll: ");
     Serial.println(roll_filtrado, 1);
+    
 
     tempo_ultima_impressao = millis();
 }
@@ -354,11 +355,14 @@ void calibrarQMC(){
   scale_z = range_medio / range_z;
 
   
-  Serial.println("\nOffsets e escalas calculados:");
+  /*Serial.println("\nOffsets e escalas calculados:");
   Serial.print("offset_x: "); Serial.println(offset_x);
   Serial.print("offset_y: "); Serial.println(offset_y);
   Serial.print("scale_x: "); Serial.println(scale_x);
   Serial.print("scale_y: "); Serial.println(scale_y);
+  Serial.print("offset_z: "); Serial.println(offset_z);
+  Serial.print("scale_z: "); Serial.println(scale_z);
+  */
 }
 
 float diferencaAngular(float alvo, float atual) {
@@ -370,14 +374,15 @@ float diferencaAngular(float alvo, float atual) {
 
 void navegarParaAlvo() {
   float erro = diferencaAngular(azimute_alvo, azimute_estavel);
-  if (abs(erro) <= TOLERANCIA_AZIMUTE) {
-    // Serial.println("ALINHADO");
+  /*if (abs(erro) <= TOLERANCIA_AZIMUTE) {
+     Serial.println("ALINHADO");
   } else if (erro > 0) {
-    // Serial.println("VIRAR DIREITA");
+     Serial.println("VIRAR DIREITA");
   } else {
-    // Serial.println("VIRAR ESQUERDA");
+     Serial.println("VIRAR ESQUERDA");
+    */
   }
-}
+
 
 float calcularErroPitch(float alvo, float atual) {
     return alvo - atual;
@@ -385,18 +390,14 @@ float calcularErroPitch(float alvo, float atual) {
 
 void navegarParaAltitude() {
     float erro_p = calcularErroPitch(pitch_alvo, pitch_estavel);
-    if (abs(erro_p) <= TOLERANCIA_PITCH) {
-       // Serial.println("ALTITUDE OK");
-    } 
-    else if (erro_p > 0) {
-        //Serial.println("SUBIR (Pitch Up)");
-    } 
-    else {
-        //Serial.println("DESCER (Pitch Down)");
+     /*if (abs(erro_p) <= TOLERANCIA_PITCH) {
+        Serial.println("ALTITUDE OK");
+    } else if (erro_p > 0) {
+        Serial.println("SUBIR (Pitch Up)");
+    } else {
+        Serial.println("DESCER (Pitch Down)");
     }
+    */
 }
 
-void calcularPitchAlvo() {
-    float delta_altura = altura_alvo - altura_atual;
-    pitch_alvo = atan2(delta_altura, distancia_horizontal) * RAD_TO_DEG;
-}
+
