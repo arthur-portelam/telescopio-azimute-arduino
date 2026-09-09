@@ -46,8 +46,7 @@ float scale_x = 1.0;
 float scale_y = 1.0;
 float scale_z = 1.0;
 
-//---VARIAVEIS PARA CALOIBRAÇÃO DO MPU--- 
-// COLOQUE AQUI OS VALORES NOVOS QUE VOCÊ EXTRAIU NA BANCADA
+//---VARIAVEIS PARA CALIBRAÇÃO DO MPU--- 
 float offsetGX = 0;
 float offsetGY = 0;
 float offsetGZ = 0; 
@@ -122,7 +121,6 @@ void setup(){
   Wire.endTransmission();
 
   delay(500);
-
   // Serial.println("=== CALIBRACAO INICIANDO DO MPU ===");
   // calibrarMPU(2000); // <-- COMENTADO POIS VOCÊ VAI USAR OS OFFSETS FIXOS
 
@@ -209,8 +207,7 @@ void loop() {
   }
 }
 
-// ==========================================================
-// ===== FUNÇÕES DE COMUNICAÇÃO E MOTOR (Da sua dupla) ======
+// ===== FUNÇÕES DE COMUNICAÇÃO E MOTOR
 // ==========================================================
 
 void lerComandoSerial() {
@@ -362,7 +359,6 @@ void executarSequencia() {
 }
 
 
-// ==========================================================
 // ===== FUNÇÕES DOS SENSORES
 
 void lerMPU(float &ax, float &ay, float &az, float &gx, float &gy, float &gz){
