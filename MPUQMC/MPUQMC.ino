@@ -208,9 +208,7 @@ void loop() {
     tempo_ultima_impressao = millis();
   }
 }
-
-// ==========================================================
-// ===== FUNÇÕES DE COMUNICAÇÃO E MOTOR (Da sua dupla) ======
+// ===== FUNÇÕES DO MOTOR ======
 // ==========================================================
 
 void lerComandoSerial() {
