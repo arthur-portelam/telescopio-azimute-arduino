@@ -302,9 +302,9 @@ void darPassosXZ_Calibrando(int passosX, int passosZ, bool direitaX, bool direit
     
     if (i < passosX) digitalWrite(stepPinX, LOW);
     if (i < passosZ) digitalWrite(stepPinZ, LOW);
-    delayMicroseconds(stepDelayX);
+    delayMicroseconds(stepDelayX); //velocidade
 
-    // Calibração embutida (Lê o sensor a cada 100 loops)
+    // Calibração embutida (Lê o sensor a cada 100 passos)
     if (i % 100 == 0) {
         int16_t x, y, z;
         lerQMC(x, y, z);
