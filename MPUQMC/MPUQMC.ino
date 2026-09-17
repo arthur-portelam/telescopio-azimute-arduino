@@ -1,14 +1,7 @@
 #include <Wire.h>
 #include <math.h>
 
-
-
-const int QMC_ADDR = 0x0D;             // Endereço I2C do chip QMC5883L           
-const int MPU_ADDR = 0x68;             // Endereço I2C do chip MPU-6050
-
-
-
-// ===== PARÂMETROS DOS MOTORES =====
+// ===== PARÂMETROS DOS MOTORES
 // Motor X
 const int stepPinX = 2;
 const int dirPinX = 5;
@@ -22,21 +15,23 @@ bool pararSolicitado = false;
 String bufferSerial = "";
 
 
-// ===== PARÂMETROS DE CALIBRAÇÃO / CONSTANTES =====
+// ===== PARÂMETROS DE CALIBRAÇÃO / CONSTANTES
+// ==========================================================
+const int QMC_ADDR = 0x0D;             // Endereço I2C do chip QMC5883L           
+const int MPU_ADDR = 0x68;             // Endereço I2C do chip MPU-6050
+
 const float ALPHA_QMC = 0.95; // Filtro Passa-Baixa QMC
 const float ALPHA_MPU = 0.98; // Filtro Complementar
 const float SENS_ACCEL = 16384.0; // Escala +/- 2g 
 const float SENS_GYRO  = 131.0;   // Escala +/- 250 °/s 
-//const float RAD_TO_DEG = 57.2957;
-//const float DEG_TO_RAD = 0.01745329;
-const float declinacao = 0.0 ;        // Declinação magnética da cidade -23.0, se deixar em 0 mostra a magnética
+const float declinacao = 0.0;        // Declinação magnética da cidade -23.0, se deixar em 0 mostra a magnética
 const float DEADBAND = 1.0;     //Margem de erro tolerada em graus 
-const float TOLERANCIA_AZIMUTE = 3.0; // Margem de erro aceitável (em graus)
+const float TOLERANCIA_AZIMUTE = 1.5; // Margem de erro aceitável (em graus)
 const float TOLERANCIA_PITCH = 2.0; // Margem de erro para altitude
-float azimute_alvo = 0.0; // "posição x" externa
+
+float azimute_alvo = 90.0; // "posição x" externa
 float pitch_alvo = 0.0;  // Inclinação alvo
 float pitch_estavel = 0.0;    
-
 
 // Variáveis para rastrear os extremos do QMC
 int16_t mx_min = 32767, mx_max = -32768;
@@ -51,27 +46,13 @@ float scale_x = 1.0;
 float scale_y = 1.0;
 float scale_z = 1.0;
 
-<<<<<<< Updated upstream
-//---VARIAVEIS PARA CALOIBRAÇÃO DO MPU--- 
-// COLOQUE AQUI OS VALORES NOVOS QUE VOCÊ EXTRAIU NA BANCADA
-float offsetGX = 0;
-float offsetGY = 0;
-float offsetGZ = 0; 
-float offsetAX = 0;
-float offsetAY = 0;
-float offsetAZ = 0;  
-=======
-
-//---VARIAVEIS PARA CALOIBRAÇÃO DO MPU--- 
-  
+//---VARIAVEIS PARA CALIBRAÇÃO DO MPU--- 
 float offsetGX = -2.828792;
 float offsetGY = 0.603373;
 float offsetGZ = -0.428433;
-
 float offsetAX = -0.017621;
 float offsetAY = 0.010805;
-float offsetAZ = -0.033458;
->>>>>>> Stashed changes
+float offsetAZ = -0.033458;  
 
 // --- VARIÁVEIS DE ESTADO --- 
 float azimute_filtrado = 0.0;
@@ -93,11 +74,25 @@ void navegarParaAlvo();
 void navegarParaAltitude();
 void calibrarMPU(int amostras);
 void calibrarQMC();
-
-
-
+void lerComandoSerial();
+void processarComando(String cmd);
+void pararMotores();
+bool checarInterrupcao();
+void darPassosX(int quantidade, bool direita);
+void darPassosXZDiferentes(int passosX, int passosZ, bool direitaX, bool direitaZ);
+void executarSequencia();
+void buscarNorte();
 
 void setup(){
+  // --- Configuração dos Motores ---
+  pinMode(stepPinX, OUTPUT);
+  pinMode(dirPinX, OUTPUT);
+  pinMode(stepPinZ, OUTPUT);
+  pinMode(dirPinZ, OUTPUT);
+  pinMode(enablePin, OUTPUT);
+  digitalWrite(enablePin, LOW); // motores habilitados
+
+  // --- Configuração dos Sensores ---
   Wire.begin();
   Serial.begin(9600);
 
@@ -115,33 +110,28 @@ void setup(){
   delay(100); // Dá um tempo para o hardware estabilizar
 
   // --- 2. CONFIGURANDO A BÚSSOLA (QMC5883L) ---
-  // Configurando o Set/Reset Period
   Wire.beginTransmission(QMC_ADDR); 
   Wire.write(0x0B); 
   Wire.write(0x01); 
   Wire.endTransmission(); 
 
-  // Configurando o Control Register 1
   Wire.beginTransmission(QMC_ADDR);
   Wire.write(0x09); 
   Wire.write(0x1D); // Configura OSR: 512, RNG: 8G, ODR: 200Hz, Modo Contínuo
   Wire.endTransmission();
 
   delay(500);
-<<<<<<< Updated upstream
-
   // Serial.println("=== CALIBRACAO INICIANDO DO MPU ===");
   // calibrarMPU(2000); // <-- COMENTADO POIS VOCÊ VAI USAR OS OFFSETS FIXOS
-=======
->>>>>>> Stashed changes
 
   tempo_ultimo_ciclo = micros();
 }
 
 void loop() {
+  // --- 1. Ouve os comandos do Qt Creator em paralelo ---
+  lerComandoSerial();
 
-   lerComandoSerial();
-
+  // --- 2. Lógica de Leitura dos Sensores ---
   unsigned long tempo_atual = micros();
   float dt = (tempo_atual - tempo_ultimo_ciclo) / 1000000.0;
   if (dt <= 0 || dt > 0.1) dt = 0.01;
@@ -159,8 +149,6 @@ void loop() {
   float pitch_rad = pitch_filtrado * DEG_TO_RAD;
   float roll_rad = roll_filtrado * DEG_TO_RAD;
 
-
-	
 	int16_t rawMX,rawMY,rawMZ;
 	lerQMC (rawMX,rawMY,rawMZ);
 	
@@ -171,23 +159,21 @@ void loop() {
 	
   //Calibração de Soft-Iron
   magX_calibrado *= scale_x;
-	magY_calibrado	*= scale_y;
+  magY_calibrado *= scale_y;
   magZ_calibrado *= scale_z;
 
 	// --- O FILTRO PASSA-BAIXA ---
   magX_filtrado  = (magX_filtrado  * ALPHA_QMC) + (magX_calibrado * (1.0 - ALPHA_QMC));
-	magY_filtrado  = (magY_filtrado  * ALPHA_QMC) + (magY_calibrado * (1.0 - ALPHA_QMC));
+  magY_filtrado  = (magY_filtrado  * ALPHA_QMC) + (magY_calibrado * (1.0 - ALPHA_QMC));
   magZ_filtrado  = (magZ_filtrado  * ALPHA_QMC) + (magZ_calibrado * (1.0 - ALPHA_QMC));
-
 
   //TILT COMPENSATION
   float Xh = magX_filtrado * cos(pitch_rad) + magY_filtrado * sin(roll_rad) * sin(pitch_rad) - magZ_filtrado * cos(roll_rad) * sin(pitch_rad);
   float Yh = magY_filtrado * cos(roll_rad) + magZ_filtrado * sin(roll_rad);
 
-	float azimute = atan2(Yh,Xh) * RAD_TO_DEG;//Calculo do ângulo já com a transformação em graus
-	azimute += declinacao; //Aplicando a declinação magnética de vitoria da conquista
+  float azimute = atan2(Yh,Xh) * RAD_TO_DEG;
+  azimute += declinacao; 
 
-	//Ajuste de quadrante: converte ângulos negativos para 0 até 360
   if (azimute < 0) azimute += 360;
   if (azimute >= 360) azimute -= 360;
 
@@ -201,47 +187,30 @@ void loop() {
     azimute_estavel = azimute;
   }
 
-  //Inlcinação alvo
-
   navegarParaAlvo();
   navegarParaAltitude();
 
-
+  // Impressão da Telemetria (Ajustado para 500ms para ler melhor)
   if (millis() - tempo_ultima_impressao >= 500) {
-
     float erro_direcao = diferencaAngular(azimute_alvo, azimute_estavel);
     float erro_pitch = calcularErroPitch(pitch_alvo, pitch_estavel);
 
-    Serial.print("Az: ");
-    Serial.print(azimute_estavel, 1);
-
-    Serial.print(" | Alvo Az: ");
-    Serial.print(azimute_alvo, 1);
-
-    Serial.print(" | Erro Az: ");
-    Serial.print(erro_direcao, 1);
-
-    Serial.print(" | Pitch: ");
-    Serial.print(pitch_estavel, 1);
-
-    Serial.print(" | Pitch Alvo: ");
-    Serial.print(pitch_alvo, 1);
-
-    Serial.print(" | Erro Pitch: ");
-    Serial.print(erro_pitch, 1);
-
-    Serial.print(" | Roll: ");
-    Serial.println(roll_filtrado, 1);
-    
+    Serial.print("Az: "); Serial.print(azimute_estavel, 1);
+    Serial.print(" | Alvo Az: "); Serial.print(azimute_alvo, 1);
+    Serial.print(" | Erro Az: "); Serial.print(erro_direcao, 1);
+    Serial.print(" || Pitch: "); Serial.print(pitch_estavel, 1);
+    Serial.print(" | Pitch Alvo: "); Serial.print(pitch_alvo, 1);
+    Serial.print(" | Erro Pitch: "); Serial.print(erro_pitch, 1);
+    Serial.print(" | Roll: "); Serial.println(roll_filtrado, 1);
 
     tempo_ultima_impressao = millis();
   }
-
-  delay(0);//ajustar
 }
-// ===== FUNÇÕES DO MOTOR ======
+
+// ===== FUNÇÕES DE COMUNICAÇÃO E MOTOR
 // ==========================================================
-  void lerComandoSerial() {
+
+void lerComandoSerial() {
   while (Serial.available() > 0) {
     char c = Serial.read();
     if (c == '\n') {
@@ -252,6 +221,7 @@ void loop() {
     }
   }
 }
+
 void processarComando(String cmd) {
   cmd.trim();
   if (cmd == "S") {
@@ -267,8 +237,16 @@ void processarComando(String cmd) {
     azimute_alvo = cmd.substring(1).toFloat();
   } else if (cmd.startsWith("P") && cmd.length() > 1) { // Recebe alvo do Pitch
     pitch_alvo = cmd.substring(1).toFloat();
+  } else if (cmd == "N"){
+    buscarNorte();
   }
 }
+
+void pararMotores() {
+  digitalWrite(enablePin, HIGH); // desabilita todos os eixos
+}
+
+// Verifica se chegou um comando "P" no meio do movimento
 bool checarInterrupcao() {
   while (Serial.available() > 0) {
     char c = Serial.read();
@@ -285,6 +263,7 @@ bool checarInterrupcao() {
   }
   return false;
 }
+
 // Move o motor X e calibra o QMC simultaneamente
 void darPassosX_Calibrando(int quantidade, bool direita) {
   digitalWrite(dirPinX, direita ? HIGH : LOW);
@@ -308,6 +287,7 @@ void darPassosX_Calibrando(int quantidade, bool direita) {
     }
   }
 }
+
 // Move X e Z simultaneamente e calibra o QMC
 void darPassosXZ_Calibrando(int passosX, int passosZ, bool direitaX, bool direitaZ) {
   digitalWrite(dirPinX, direitaX ? HIGH : LOW);
@@ -324,9 +304,9 @@ void darPassosXZ_Calibrando(int passosX, int passosZ, bool direitaX, bool direit
     
     if (i < passosX) digitalWrite(stepPinX, LOW);
     if (i < passosZ) digitalWrite(stepPinZ, LOW);
-    delayMicroseconds(stepDelayX);
+    delayMicroseconds(stepDelayX); //velocidade
 
-    // Calibração embutida (Lê o sensor a cada 100 loops)
+    // Calibração embutida (Lê o sensor a cada 100 passos)
     if (i % 100 == 0) {
         int16_t x, y, z;
         lerQMC(x, y, z);
@@ -355,10 +335,16 @@ void executarSequencia() {
   unsigned long inicio = millis();
   while (millis() - inicio < 15000) {
 
-    darPassosXZ_Calibrando(19000, 2000, false, false); 
+    darPassosXZ_Calibrando(17000, 1500, false, false); 
     if (pararSolicitado) { pararMotores(); return; }
     
-    darPassosXZ_Calibrando(19000, 2000, true, true);  
+    darPassosXZ_Calibrando(17000, 1500, true, true);  
+    if (pararSolicitado) { pararMotores(); return; }
+    
+    darPassosXZ_Calibrando(17000, 1500, true, false); 
+    if (pararSolicitado) { pararMotores(); return; }
+    
+    darPassosXZ_Calibrando(17000, 1500, false, true);  
     if (pararSolicitado) { pararMotores(); return; }
   }
 
@@ -376,17 +362,24 @@ void executarSequencia() {
   scale_y = range_medio / range_y;
   scale_z = range_medio / range_z;
 
+
+  Serial.println("\n=== RESULTADOS DA CALIBRACAO ===");
+  Serial.print("Offset X (Hard-Iron): "); Serial.println(offset_x);
+  Serial.print("Offset Y (Hard-Iron): "); Serial.println(offset_y);
+  Serial.print("Offset Z (Hard-Iron): "); Serial.println(offset_z);
+  
+  Serial.print("Escala X (Soft-Iron): "); Serial.println(scale_x);
+  Serial.print("Escala Y (Soft-Iron): "); Serial.println(scale_y);
+  Serial.print("Escala Z (Soft-Iron): "); Serial.println(scale_z);
+  Serial.println("================================\n");
+
   Serial.println("\n=== CALIBRACAO FINALIZADA COM SUCESSO ===");
+
   tempo_ultimo_ciclo = micros();
 }
 
 
-// ==========================================================
 // ===== FUNÇÕES DOS SENSORES
-// ==========================================================
-void pararMotores() {
-  digitalWrite(enablePin, HIGH); // desabilita todos os eixos
-}
 
 void lerMPU(float &ax, float &ay, float &az, float &gx, float &gy, float &gz){
     Wire.beginTransmission(MPU_ADDR); 
@@ -412,16 +405,11 @@ void lerMPU(float &ax, float &ay, float &az, float &gx, float &gy, float &gz){
     gz = (raw_gz / SENS_GYRO) - offsetGZ;
 }
 
-
 void calibrarMPU(int amostras){
-
   long somaGX=0, somaGY=0, somaGZ=0;
   long somaAX=0, somaAY=0, somaAZ=0;
 
-  Serial.println("Calibrando MPU...");
-
   for (int i=0; i<amostras; i++) {
-
     Wire.beginTransmission(MPU_ADDR);
     Wire.write(0x3B);
     Wire.endTransmission(false);
@@ -430,62 +418,47 @@ void calibrarMPU(int amostras){
     int16_t aX = (Wire.read()<<8)|Wire.read();
     int16_t aY = (Wire.read()<<8)|Wire.read();
     int16_t aZ = (Wire.read()<<8)|Wire.read();
-
     Wire.read(); Wire.read();
-
     int16_t gX = (Wire.read()<<8)|Wire.read();
     int16_t gY = (Wire.read()<<8)|Wire.read();
     int16_t gZ = (Wire.read()<<8)|Wire.read();
 
     somaGX += gX; somaGY += gY; somaGZ += gZ;
     somaAX += aX; somaAY += aY; somaAZ += aZ;
-
     delay(2);
   }
 
   offsetGX = (somaGX/(float)amostras)/SENS_GYRO;
   offsetGY = (somaGY/(float)amostras)/SENS_GYRO;
   offsetGZ = (somaGZ/(float)amostras)/SENS_GYRO;
-
   offsetAX = (somaAX/(float)amostras)/SENS_ACCEL;
   offsetAY = (somaAY/(float)amostras)/SENS_ACCEL;
   offsetAZ = ((somaAZ/(float)amostras)/SENS_ACCEL) - 1.0;
-
-  Serial.println("Calibracao concluida!");
-
 }
 
- // LEITURA DO QMC
 void lerQMC(int16_t &mx, int16_t &my, int16_t &mz){
-	
-// Leitura em rajada de 6 bytes começando do 0x00  
   Wire.beginTransmission(QMC_ADDR);  
   Wire.write(0x00);  
   Wire.endTransmission(false);
-  Wire.requestFrom(QMC_ADDR, 6); // solicita os 6 bytes 
+  Wire.requestFrom(QMC_ADDR, 6); 
 
+  if(Wire.available() >= 6) {
+      uint8_t x_lsb = Wire.read();
+      uint8_t x_msb = Wire.read();
+      mx = x_lsb | (x_msb << 8);  
 
-	if(Wire.available() >= 6) {
-// Lendo e garantindo a ordem: PRIMEIRO é o Low (LSB) e o SEGUNDO é o High (MSB)
-    	uint8_t x_lsb = Wire.read();
-    	uint8_t x_msb = Wire.read();
-    	mx = x_lsb | (x_msb << 8);  
+      uint8_t y_lsb = Wire.read();
+      uint8_t y_msb = Wire.read();
+      my = y_lsb | (y_msb << 8);  
 
-    	uint8_t y_lsb = Wire.read();
-    	uint8_t y_msb = Wire.read();
-    	my = y_lsb | (y_msb << 8);  
-
-	    uint8_t z_lsb = Wire.read();
-	    uint8_t z_msb = Wire.read();
-	    mz= z_lsb | (z_msb << 8);
-	
+      uint8_t z_lsb = Wire.read();
+      uint8_t z_msb = Wire.read();
+      mz= z_lsb | (z_msb << 8);
+  } else {   
+    mx = 0; my = 0; mz = 0;
   }
-  else {   
-    mx = 0;
-    my = 0;
-    mz = 0;
 }
-}
+
 void calibrarQMC(){
   unsigned long star = millis();
 
@@ -495,10 +468,8 @@ void calibrarQMC(){
 
     if (x < mx_min) mx_min = x;
     if (x > mx_max) mx_max = x;
-
     if (y < my_min) my_min = y;
     if (y > my_max) my_max = y;
-
     if (z < mz_min) mz_min = z;
     if (z > mz_max) mz_max = z;
 
@@ -506,31 +477,18 @@ void calibrarQMC(){
     delay(100);
   }
   
-	// --- cálculo offset ---
   offset_x = (mx_max + mx_min) / 2.0;
   offset_y = (my_max + my_min) / 2.0; 
   offset_z = (mz_max + mz_min) / 2.0;
   
-  // --- cálculo escala ---
   float range_x = (mx_max - mx_min) / 2.0;
   float range_y = (my_max - my_min) / 2.0;
   float range_z = (mz_max - mz_min) / 2.0;
-
   float range_medio = (range_x + range_y + range_z) / 3.0;
   
   scale_x = range_medio / range_x;
   scale_y = range_medio / range_y;
   scale_z = range_medio / range_z;
-
-  
-  /*Serial.println("\nOffsets e escalas calculados:");
-  Serial.print("offset_x: "); Serial.println(offset_x);
-  Serial.print("offset_y: "); Serial.println(offset_y);
-  Serial.print("scale_x: "); Serial.println(scale_x);
-  Serial.print("scale_y: "); Serial.println(scale_y);
-  Serial.print("offset_z: "); Serial.println(offset_z);
-  Serial.print("scale_z: "); Serial.println(scale_z);
-  */
 }
 
 float diferencaAngular(float alvo, float atual) {
@@ -542,15 +500,14 @@ float diferencaAngular(float alvo, float atual) {
 
 void navegarParaAlvo() {
   float erro = diferencaAngular(azimute_alvo, azimute_estavel);
-  /*if (abs(erro) <= TOLERANCIA_AZIMUTE) {
-     Serial.println("ALINHADO");
+  if (abs(erro) <= TOLERANCIA_AZIMUTE) {
+    // Serial.println("ALINHADO");
   } else if (erro > 0) {
-     Serial.println("VIRAR DIREITA");
+    // Serial.println("VIRAR DIREITA");
   } else {
-     Serial.println("VIRAR ESQUERDA");
-    */
+    // Serial.println("VIRAR ESQUERDA");
   }
-
+}
 
 float calcularErroPitch(float alvo, float atual) {
     return alvo - atual;
@@ -558,18 +515,70 @@ float calcularErroPitch(float alvo, float atual) {
 
 void navegarParaAltitude() {
     float erro_p = calcularErroPitch(pitch_alvo, pitch_estavel);
-     /*if (abs(erro_p) <= TOLERANCIA_PITCH) {
-        Serial.println("ALTITUDE OK");
-    } else if (erro_p > 0) {
-        Serial.println("SUBIR (Pitch Up)");
-    } else {
-        Serial.println("DESCER (Pitch Down)");
+    if (abs(erro_p) <= TOLERANCIA_PITCH) {
+       // Serial.println("ALTITUDE OK");
+    } 
+    else if (erro_p > 0) {
+        //Serial.println("SUBIR (Pitch Up)");
+    } 
+    else {
+        //Serial.println("DESCER (Pitch Down)");
     }
-<<<<<<< Updated upstream
 }
-=======
-    */
-}
+void buscarNorte() {
+  Serial.println("\n=== BUSCANDO O NORTE MAGNÉTICO ===");
+  digitalWrite(enablePin, LOW); // Energiza os motores
+
+  while (true) {
+    if (checarInterrupcao()) { 
+      pararMotores(); 
+      return; 
+    }
+
+    //leitura do MPU
+    float ax, ay, az, gx, gy, gz;
+    lerMPU(ax, ay, az, gx, gy, gz);
+    float pitch_rad = atan2(ax, sqrt(ay * ay + az * az)); 
+    float roll_rad  = atan2(ay, az); 
+
+    //Aplicando a calibração do QMC
+    int16_t rawMX, rawMY, rawMZ;
+    lerQMC(rawMX, rawMY, rawMZ);
+    float mx = (rawMX - offset_x) * scale_x;
+    float my = (rawMY - offset_y) * scale_y;
+    float mz = (rawMZ - offset_z) * scale_z;
+
+    //Tilt Compensation
+    float Xh = mx * cos(pitch_rad) + my * sin(roll_rad) * sin(pitch_rad) - mz * cos(roll_rad) * sin(pitch_rad);
+    float Yh = my * cos(roll_rad) + mz * sin(roll_rad);
+
+    float azimute = atan2(Yh, Xh) * RAD_TO_DEG + declinacao;
+    if (azimute < 0) azimute += 360;
+    if (azimute >= 360) azimute -= 360;
+
+    //Calcula o erro em relação ao Norte (Alvo = 0.0)
+    float erro = diferencaAngular(0.0, azimute);
+    int passos = (abs(erro) < 10.0) ? 2 : 10; 
 
 
->>>>>>> Stashed changes
+    //Verifica se chegou ao alvo(norte)
+    if (abs(erro) <= TOLERANCIA_AZIMUTE) {
+      Serial.println(">>> NORTE ENCONTRADO COM SUCESSO! <<<");
+      pararMotores();
+      azimute_estavel = azimute; // Sincroniza com a variável do loop
+      break;
+    }
+
+    //Decide o sentido do giro pelo caminho mais curto
+    bool girarDireita = (erro < 0); 
+    digitalWrite(dirPinX, girarDireita ? HIGH : LOW);
+
+    //Dá 10 passos no motor X
+    for (int i = 0; i < passos; i++) {
+       digitalWrite(stepPinX, HIGH);
+       delayMicroseconds(stepDelayX);
+       digitalWrite(stepPinX, LOW);
+       delayMicroseconds(stepDelayX);
+    }
+  }
+}
