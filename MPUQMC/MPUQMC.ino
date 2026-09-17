@@ -239,9 +239,7 @@ void loop() {
 
   delay(0);//ajustar
 }
-
-// ==========================================================
-// ===== FUNÇÕES DE COMUNICAÇÃO E MOTOR (Da sua dupla) ======
+// ===== FUNÇÕES DO MOTOR ======
 // ==========================================================
   void lerComandoSerial() {
   while (Serial.available() > 0) {
