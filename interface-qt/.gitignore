@@ -1,0 +1,17 @@
+# Arquivos de configuração local do Qt Creator
+*.pro.user
+*.pro.user.*
+*.qbs.user
+*.qbs.user.*
+*.moc
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+
+# Pastas de compilação (Shadow Build)
+build-*
+build/
+out/
+Debug/
+Release/
