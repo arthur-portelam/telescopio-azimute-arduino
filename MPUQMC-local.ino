@@ -1,5 +1,6 @@
 #include <Wire.h>
 #include <math.h>
+#include <AccelStepper.h>
 
 // ===== PARÂMETROS DOS MOTORES
 // Motor X
@@ -10,7 +11,13 @@ const int stepPinZ = 4;
 const int dirPinZ = 7;
 // Enable compartilhado (CNC Shield)
 const int enablePin = 8;
-int stepDelayX = 2000; // velocidade do motor X (ajustável via Qt em RPM)
+float velocidade_motor = 1000.0;
+const float PASSOS_POR_GRAU_X = 40000.0 / 360.0;
+const float PASSOS_POR_GRAU_Z = 29.70;
+
+AccelStepper motorX(AccelStepper::DRIVER, stepPinX, dirPinX);
+AccelStepper motorZ(AccelStepper::DRIVER, stepPinZ, dirPinZ);
+
 bool pararSolicitado = false;
 String bufferSerial = "";
 
@@ -67,6 +74,15 @@ float roll_filtrado = 0.0;
 unsigned long tempo_ultimo_ciclo = 0; 
 unsigned long tempo_ultima_impressao = 0;
 
+float dir_ini = 0;
+float dir_fin = 0;
+float elv_ini = 0;
+float elv_fin = 0;
+float elv_max = 0;
+float tempo_trajeto = 0;
+
+
+
 
 // --- PROTÓTIPOS ---
 void lerQMC(int16_t &mx, int16_t &my, int16_t &mz);
@@ -85,15 +101,23 @@ void darPassosXZ_Calibrando(int passosX, int passosZ, bool direitaX, bool baixoZ
 void executarSequencia();
 void buscarNorte();
 float atualizarSensores();
+void teste_um(String cmd);
+void teste_dois(String cmd);
 
 void setup(){
+  bufferSerial.reserve(32);
   // --- Configuração dos Motores ---
-  pinMode(stepPinX, OUTPUT);
-  pinMode(dirPinX, OUTPUT);
-  pinMode(stepPinZ, OUTPUT);
-  pinMode(dirPinZ, OUTPUT);
   pinMode(enablePin, OUTPUT);
-  digitalWrite(enablePin, LOW); // motores habilitados
+  digitalWrite(enablePin, LOW);
+
+  // Configuração do Motor do Azimute (X)
+  motorX.setMaxSpeed(1000.0);      // Velocidade máxima de ~9 graus por segundo
+  motorX.setAcceleration(500.0);   // Rampa de aceleração suave (leva 2s para chegar no máximo)
+
+  // Configuração do Motor da Altitude (Z)
+  // O motor Z lida com o peso do tubo contra a gravidade.
+  motorZ.setMaxSpeed(1000.0);
+  motorZ.setAcceleration(500.0);
 
   // --- Configuração dos Sensores ---
   Wire.begin();
@@ -131,7 +155,6 @@ void setup(){
 }
 
 void loop() {
-
   
   lerComandoSerial();
   executandoMaquinaDeEstado();
@@ -155,13 +178,13 @@ void loop() {
     float erro_direcao = diferencaAngular(azimute_alvo, azimute_estavel);
     float erro_pitch = calcularErroPitch(pitch_alvo, pitch_estavel);
 
-    Serial.print("Az: "); Serial.print(azimute_estavel, 1);
-    Serial.print(" | Alvo Az: "); Serial.print(azimute_alvo, 1);
-    Serial.print(" | Erro Az: "); Serial.print(erro_direcao, 1);
-    Serial.print(" || Pitch: "); Serial.print(pitch_estavel, 1);
-    Serial.print(" | Pitch Alvo: "); Serial.print(pitch_alvo, 1);
-    Serial.print(" | Erro Pitch: "); Serial.print(erro_pitch, 1);
-    Serial.print(" | Roll: "); Serial.println(roll_filtrado, 1);
+    Serial.print(F("Az: ")); Serial.print(azimute_estavel, 1);
+    Serial.print(F(" | Alvo Az: ")); Serial.print(azimute_alvo, 1);
+    Serial.print(F(" | Erro Az: ")); Serial.print(erro_direcao, 1);
+    Serial.print(F(" || Pitch: ")); Serial.print(pitch_estavel, 1);
+    Serial.print(F(" | Pitch Alvo: ")); Serial.print(pitch_alvo, 1);
+    Serial.print(F(" | Erro Pitch: ")); Serial.print(erro_pitch, 1);
+    Serial.print(F(" | Roll: ")); Serial.println(roll_filtrado, 1);
 
     tempo_ultima_impressao = millis();
   }
@@ -182,41 +205,25 @@ void lerComandoSerial() {
   }
 }
 
-/*
-void processarComando(String cmd) {
-  cmd.trim();
-  if (cmd == "S") {
-    executarSequencia();
-  } else if (cmd == "P") { // Parada de emergência
-    pararMotores();
-  } else if (cmd.startsWith("V")) {
-    int rpm = cmd.substring(1).toInt();
-    if (rpm > 0) {
-      stepDelayX = 75000 / rpm;
-    }
-  } else if (cmd.startsWith("A")) { // Recebe alvo do Azimute
-    azimute_alvo = cmd.substring(1).toFloat();
-  } else if (cmd.startsWith("P") && cmd.length() > 1) { // Recebe alvo do Pitch
-    pitch_alvo = cmd.substring(1).toFloat();
-  } else if (cmd == "N"){
-    buscarNorte();
-  } else if (cmd == "I"){
-    nivelar_pitch();
-  }
-}
-*/
 
 void pararMotores() {
-  digitalWrite(enablePin, HIGH); // desabilita todos os eixos
+  pararSolicitado = true;
+
+  motorX.moveTo(motorX.currentPosition());
+  motorZ.moveTo(motorZ.currentPosition());
+
+  digitalWrite(enablePin, HIGH); 
+
 }
 
 // Verifica se chegou um comando "P" no meio do movimento
 bool checarInterrupcao() {
   while (Serial.available() > 0) {
     char c = Serial.read();
-    if (c == '\n') {
+    if (c == '\n' || c == '\r') {
+      bufferSerial.trim();
       if (bufferSerial == "P") {
-        pararSolicitado = true;
+        pararMotores(); 
         bufferSerial = "";
         return true;
       }
@@ -230,32 +237,30 @@ bool checarInterrupcao() {
 
 // Move X e Z simultaneamente e calibra o QMC
 void darPassosXZ_Calibrando(int passosX, int passosZ, bool direitaX, bool baixoZ) {
-  digitalWrite(dirPinX, direitaX ? HIGH : LOW);
-  digitalWrite(dirPinZ, baixoZ ? HIGH : LOW);
-  
-  int maxPassos = max(passosX, passosZ);
-  
-  for (int i = 0; i < maxPassos; i++) {
-    if (checarInterrupcao()) return;
-    
-    if (i < passosX) digitalWrite(stepPinX, HIGH);
-    if (i < passosZ) digitalWrite(stepPinZ, HIGH);
-    delayMicroseconds(stepDelayX);
-    
-    if (i < passosX) digitalWrite(stepPinX, LOW);
-    if (i < passosZ) digitalWrite(stepPinZ, LOW);
-    delayMicroseconds(stepDelayX); //velocidade
 
-    // Calibração embutida (Lê o sensor a cada 100 passos)
-    if (i % 100 == 0) {
-        int16_t x, y, z;
-        lerQMC(x, y, z);
-        if (x < mx_min) mx_min = x;
-        if (x > mx_max) mx_max = x;
-        if (y < my_min) my_min = y;
-        if (y > my_max) my_max = y;
-        if (z < mz_min) mz_min = z;
-        if (z > mz_max) mz_max = z;
+  motorX.move(direitaX ? passosX : -passosX);
+  motorZ.move(baixoZ ? passosZ : -passosZ);
+
+  unsigned long ultimoTempoSensor = 0;
+
+  while( motorX.distanceToGo() != 0 || motorZ.distanceToGo() != 0 ){
+
+    if (checarInterrupcao()) return;
+
+    motorX.run();
+    motorZ.run();
+
+    if(millis() - ultimoTempoSensor >= 50 ){
+      ultimoTempoSensor = millis();
+
+      int16_t x, y, z;
+      lerQMC(x, y, z);
+      if (x < mx_min) mx_min = x;
+      if (x > mx_max) mx_max = x;
+      if (y < my_min) my_min = y;
+      if (y > my_max) my_max = y;
+      if (z < mz_min) mz_min = z;
+      if (z > mz_max) mz_max = z;
     }
   }
 }
@@ -264,7 +269,7 @@ void executarSequencia() {
   pararSolicitado = false;
   digitalWrite(enablePin, LOW);
 
-  Serial.println("\n=== INICIANDO CALIBRACAO MECANICA (15s) ===");
+  Serial.println(F("\n=== INICIANDO CALIBRACAO MECANICA (15s) ==="));
 
   // 1. Zera a memória do QMC
   mx_min = 32767; mx_max = -32768;
@@ -275,16 +280,16 @@ void executarSequencia() {
   unsigned long inicio = millis();
   while (millis() - inicio < 15000) {
 
-    darPassosXZ_Calibrando(17000, 1500, false, false); 
+    darPassosXZ_Calibrando(17000, 900, false, false); 
     if (pararSolicitado) { pararMotores(); return; }
     
-    darPassosXZ_Calibrando(17000, 1500, true, true);  
+    darPassosXZ_Calibrando(17000, 900, true, true);  
     if (pararSolicitado) { pararMotores(); return; }
     
-    darPassosXZ_Calibrando(17000, 1500, true, false); 
+    darPassosXZ_Calibrando(17000, 900, true, false); 
     if (pararSolicitado) { pararMotores(); return; }
     
-    darPassosXZ_Calibrando(17000, 1500, false, true);  
+    darPassosXZ_Calibrando(17000, 900, false, true);  
     if (pararSolicitado) { pararMotores(); return; }
   }
 
@@ -303,17 +308,17 @@ void executarSequencia() {
   scale_z = range_medio / range_z;
 
 
-  Serial.println("\n=== RESULTADOS DA CALIBRACAO ===");
-  Serial.print("Offset X (Hard-Iron): "); Serial.println(offset_x);
-  Serial.print("Offset Y (Hard-Iron): "); Serial.println(offset_y);
-  Serial.print("Offset Z (Hard-Iron): "); Serial.println(offset_z);
+  Serial.println(F("\n=== RESULTADOS DA CALIBRACAO ==="));
+  Serial.print(F("Offset X (Hard-Iron): ")); Serial.println(offset_x);
+  Serial.print(F("Offset Y (Hard-Iron): ")); Serial.println(offset_y);
+  Serial.print(F("Offset Z (Hard-Iron): ")); Serial.println(offset_z);
   
-  Serial.print("Escala X (Soft-Iron): "); Serial.println(scale_x);
-  Serial.print("Escala Y (Soft-Iron): "); Serial.println(scale_y);
-  Serial.print("Escala Z (Soft-Iron): "); Serial.println(scale_z);
-  Serial.println("================================\n");
+  Serial.print(F("Escala X (Soft-Iron): ")); Serial.println(scale_x);
+  Serial.print(F("Escala Y (Soft-Iron): ")); Serial.println(scale_y);
+  Serial.print(F("Escala Z (Soft-Iron): ")); Serial.println(scale_z);
+  Serial.println(F("================================\n"));
 
-  Serial.println("\n=== CALIBRACAO FINALIZADA COM SUCESSO ===");
+  Serial.println(F("\n=== CALIBRACAO FINALIZADA COM SUCESSO ==="));
 
   tempo_ultimo_ciclo = micros();
 }
@@ -438,16 +443,6 @@ float diferencaAngular(float alvo, float atual) {
   return diff;
 }
 
-void navegarParaAlvo() {
-  float erro = diferencaAngular(azimute_alvo, azimute_estavel);
-  if (abs(erro) <= TOLERANCIA_AZIMUTE) {
-    // Serial.println("ALINHADO");
-  } else if (erro > 0) {
-    // Serial.println("VIRAR DIREITA");
-  } else {
-    // Serial.println("VIRAR ESQUERDA");
-  }
-}
 
 float calcularErroPitch(float alvo, float atual) {
     return alvo - atual;
@@ -465,8 +460,50 @@ void navegarParaAltitude() {
         //Serial.println("DESCER (Pitch Down)");
     }
 }
+// Lê o azimute em repouso sem o atraso do filtro de 95%
+float obterAzimuteInstantaneo() {
+  // 1. Lê inclinação estática para compensar o tilt da bússola
+  float ax, ay, az, gx, gy, gz;
+  lerMPU(ax, ay, az, gx, gy, gz);
+  float pitch_rad = atan2(ax, sqrt(ay * ay + az * az)); 
+  float roll_rad  = atan2(ay, az); 
+
+  // 2. Média de 5 leituras rápidas da bússola
+  long somaX = 0, somaY = 0, somaZ = 0;
+  for (int i = 0; i < 5; i++) {
+    int16_t mx, my, mz;
+    lerQMC(mx, my, mz);
+    somaX += mx;
+    somaY += my;
+    somaZ += mz;
+    delay(3);
+  }
+
+  // 3. Calibração Hard-Iron e Soft-Iron
+  float mx_cal = ((somaX / 5.0) - offset_x) * scale_x;
+  float my_cal = ((somaY / 5.0) - offset_y) * scale_y;
+  float mz_cal = ((somaZ / 5.0) - offset_z) * scale_z;
+
+  // 4. Tilt Compensation
+  float Xh = mx_cal * cos(pitch_rad) + my_cal * sin(roll_rad) * sin(pitch_rad) - mz_cal * cos(roll_rad) * sin(pitch_rad);
+  float Yh = my_cal * cos(roll_rad) + mz_cal * sin(roll_rad);
+
+  az = atan2(Yh, Xh) * RAD_TO_DEG + declinacao;
+  if (az < 0) az += 360;
+  if (az >= 360) az -= 360;
+
+  // Sincroniza os filtros do sistema para não dar salto quando voltar ao loop
+  magX_filtrado = mx_cal;
+  magY_filtrado = my_cal;
+  magZ_filtrado = mz_cal;
+  azimute_filtrado = az;
+  azimute_estavel = az;
+
+  return az;
+}
+
 void buscarNorte() {
-  Serial.println("\n=== BUSCANDO O NORTE MAGNÉTICO ===");
+  Serial.println(F("\n=== BUSCANDO O NORTE MAGNÉTICO ==="));
   digitalWrite(enablePin, LOW); // Energiza os motores
 
   while (true) {
@@ -474,84 +511,53 @@ void buscarNorte() {
       pararMotores(); 
       return; 
     }
-    //atualiza os valores dos sensores
-    float azimute = atualizarSensores();
 
-    //Calcula o erro em relação ao Norte (Alvo = 0.0)
+    // Lê o azimute real e instantâneo
+    float azimute = obterAzimuteInstantaneo();
+
+    // Calcula o erro em relação ao Norte (Alvo = 0.0)
     float erro = diferencaAngular(0.0, azimute);
-    int passos = (abs(erro) < 10.0) ? 2 : 10; 
+    float erroAbs = abs(erro);
 
+    Serial.print(F("Azimute Real: ")); Serial.print(azimute, 1);
+    Serial.print(F("° | Erro: ")); Serial.print(erro, 1);
+    Serial.println(F("°"));
 
-    //Verifica se chegou ao alvo(norte)
-    if (abs(erro) <= TOLERANCIA_AZIMUTE) {
-      Serial.println(">>> NORTE ENCONTRADO COM SUCESSO! <<<");
-      pararMotores();
+    // Verifica se chegou ao Norte dentro da tolerância
+    if (erroAbs <= TOLERANCIA_AZIMUTE) {
+      Serial.println(F(">>> NORTE ENCONTRADO COM SUCESSO! <<<"));
      
-      azimute_estavel = azimute; // Sincroniza com a variável do loop
+      motorX.setCurrentPosition(0);
+      azimute_estavel = azimute;
       break;
     }
 
-    //Decide o sentido do giro pelo caminho mais curto
-    bool girarDireita = (erro < 0); 
-    digitalWrite(dirPinX, girarDireita ? HIGH : LOW);
+    // Calcula passos proporcionais (60% da distância restante):
+    long passos = (long)(erroAbs * PASSOS_POR_GRAU_X * 0.6);
 
-    //Dá 10 passos no motor X
-    for (int i = 0; i < passos; i++) {
-       digitalWrite(stepPinX, HIGH);
-       delayMicroseconds(stepDelayX);
-       digitalWrite(stepPinX, LOW);
-       delayMicroseconds(stepDelayX);
+    // Limites de segurança:
+    if (passos < 20) passos = 20;       // Mínimo de 20 passos (~0.18°) para ajuste fino
+    if (passos > 1500) passos = 1500;   // Máximo de 1500 passos (~13.5°) por salto
+
+    // Sentido do giro:
+    // erro > 0: Norte está à direita (horário) -> passos negativos (-)
+    // erro < 0: Norte está à esquerda (anti-horário) -> passos positivos (+)
+    motorX.move(erro > 0 ? -passos : passos);
+
+    while (motorX.distanceToGo() != 0) {
+      if (checarInterrupcao()) {
+        pararMotores();
+        return;
+      }
+      motorX.run();
     }
+
+    delay(40); // Pausa para a vibração mecânica cessar antes da leitura
   }
 }
-/*
-void nivelar_pitch(){
-  digitalWrite(enablePin, LOW);
-
-  float ax, ay, az, gx, gy, gz;
-  lerMPU(ax, ay, az, gx, gy, gz);
-  pitch_filtrado = atan2(ax, sqrt(ay * ay + az * az)) * RAD_TO_DEG;
-  tempo_ultimo_ciclo = micros();
-
-
-  while (true) {
-    if (checarInterrupcao()) { 
-      pararMotores(); 
-      return;
-      }
-
-      atualizarSensores();
-      float pitch_atual = pitch_filtrado;
-
-      float erro = calcularErroPitch(0.0, pitch_atual);
-
-
-      if (abs (erro) <= TOLERANCIA_PITCH){
-        Serial.println("Nivelamento completo");
-        pararMotores();
-
-        pitch_estavel = pitch_atual; //Passar a variavel para o loop
-        break;
-      }
-
-      bool baixoZ = (erro < 0.0);
-      digitalWrite(dirPinZ, baixoZ ? HIGH : LOW);
-
-      int passos = (abs(erro) < 6.0) ? 2 : 10;
-      for (int i = 0; i < passos; i++) {
-       digitalWrite(stepPinZ, HIGH);
-       delayMicroseconds(stepDelayX);
-       digitalWrite(stepPinZ, LOW);
-       delayMicroseconds(stepDelayX);
-    }
-
-    }
-      
-}
-*/
 
 void nivelar_pitch() {
-  Serial.println("\n=== NIVELANDO ALTITUDE (PITCH 0°) ===");
+  Serial.println(F("\n=== NIVELANDO ALTITUDE (PITCH 0°) ==="));
   digitalWrite(enablePin, LOW); 
 
   while (true) {
@@ -577,9 +583,9 @@ void nivelar_pitch() {
     Serial.println(erro, 1);
 
     if (abs(erro) <= TOLERANCIA_PITCH) {
-      Serial.println(">>> Nivelamento de Altitude Concluído com Sucesso! <<<");
-      pararMotores();
-      
+      Serial.println(F(">>> Nivelamento de Altitude Concluído com Sucesso! <<<"));
+
+      motorZ.setCurrentPosition(0);
       pitch_filtrado = pitch_atual;
       pitch_estavel = pitch_atual;
       tempo_ultimo_ciclo = micros();
@@ -588,17 +594,19 @@ void nivelar_pitch() {
 
     // Se pitch > 0 (apontado para cima), erro < 0 -> precisa DESCER.
     bool descerZ = (erro < 0.0);
-    digitalWrite(dirPinZ, descerZ ? HIGH : LOW);
 
+    //int passos_para_pitch0 = (abs(erro) * PASSOS_POR_GRAU_Z);
     int passos = (abs(erro) < 5.0) ? 2 : 8;
+    //motorZ.move(descerZ ? passos_para_pitch0 : -passos_para_pitch0);
+    motorZ.move(descerZ ? passos : -passos);
 
-    for (int i = 0; i < passos; i++) {
-       digitalWrite(stepPinZ, HIGH);
-       delayMicroseconds(stepDelayX);
-       digitalWrite(stepPinZ, LOW);
-       delayMicroseconds(stepDelayX);
+    while (motorZ.distanceToGo() !=0){
+      if (checarInterrupcao()){
+        pararMotores(); 
+        return;
+      }
+      motorZ.run();
     }
-
     delay(30); 
   }
 }
@@ -651,18 +659,15 @@ float atualizarSensores(){
 
   azimute_filtrado = azimute;
   return azimute;
-  
 }
-
-
 
 enum class estadoT{
       ESPERANDO,
       INICIALIZACAO,
       RASTREAMENTO,
+      INDO_PARA_ALVO,
 };
 
-enum estadoT;
 estadoT estadoAtual = estadoT::ESPERANDO;
 
 void executandoMaquinaDeEstado(){
@@ -691,6 +696,16 @@ void executandoMaquinaDeEstado(){
     case estadoT::RASTREAMENTO:
       //logica de rastreamento
       break;
+
+    case estadoT::INDO_PARA_ALVO:
+      inicio_do_alvo();
+      if (pararSolicitado) { estadoAtual = estadoT::ESPERANDO; 
+      break; } 
+
+      final_do_alvo();
+      Serial.println("viagem concluida!");
+      estadoAtual = estadoT::ESPERANDO;
+      break;
   }
 }
 
@@ -703,11 +718,13 @@ void processarComando(String cmd) {
     } else if (cmd.startsWith("V")) {
       int rpm = cmd.substring(1).toInt();
       if (rpm > 0) {
-        stepDelayX = 75000 / rpm;
+        velocidade_motor = (rpm * 6.67);
+        motorX.setMaxSpeed(velocidade_motor);
+        motorZ.setMaxSpeed(velocidade_motor);
       }
-    } else if (cmd.startsWith("A")) { // Recebe alvo do Azimute
-      azimute_alvo = cmd.substring(1).toFloat();
-    }  else if (cmd.startsWith("P") && cmd.length() > 1) { // Recebe alvo do Pitch
+    } //else if (cmd.startsWith("A")) { // Recebe alvo do Azimute
+      //azimute_alvo = cmd.substring(1).toFloat();}  
+      else if (cmd.startsWith("P") && cmd.length() > 1) { // Recebe alvo do Pitch
       pitch_alvo = cmd.substring(1).toFloat();
     } else if (cmd == "N"){
       buscarNorte();
@@ -715,8 +732,194 @@ void processarComando(String cmd) {
       estadoAtual = estadoT::RASTREAMENTO;
     } else if (cmd == "I"){
     nivelar_pitch();
+    } else if ( cmd.startsWith("Alvo:")){
+      alvo(cmd);
+    } else if ( cmd.startsWith("DEMO1")){
+      teste_um(cmd);
+    }
+    else if ( cmd.startsWith("DEMO2")){
+      teste_dois(cmd);
+    }
+}
+
+void alvo(String cmd){
+    cmd.trim();
+    pararSolicitado = false;
+    
+    if(cmd.startsWith("Alvo:")){
+        String texto = cmd.substring(5);
+        float dados[6];
+        
+        for(int i=0; i<6; i++){
+            int virgula = texto.indexOf(',');
+            
+            if (virgula !=-1){
+                dados[i] = texto.substring(0, virgula).toFloat();
+                texto = texto.substring(virgula + 1);
+            } else {
+                dados[i] = texto.toFloat();
+            }
+        }
+        
+      dir_ini = dados[0];
+      dir_fin = dados[1];
+      elv_ini = dados[2];
+      elv_fin = dados[3];
+      elv_max = dados[4];
+      tempo_trajeto = dados[5];
+
+      Serial.println(F(">> Alvo recebido com sucesso!"));
+      Serial.print(F("Direcao Inicial: ")); Serial.println(dir_ini);
+      Serial.print(F("Direcao Final:   ")); Serial.println(dir_fin);
+      Serial.print(F("Tempo(s):        ")); Serial.println(tempo_trajeto);
+      estadoAtual = estadoT::INDO_PARA_ALVO;
+
+    }
+}
+void teste_um(String cmd){
+    cmd.trim();
+    pararSolicitado = false;
+  
+      dir_ini = 20;
+      dir_fin = 50;
+      elv_ini = 15;
+      elv_fin = 15;
+      elv_max = 30;
+      tempo_trajeto = 7;
+
+      Serial.println(F(">> Alvo recebido com sucesso!"));
+      Serial.print(F("Direcao Inicial: ")); Serial.println(dir_ini);
+      Serial.print(F("Direcao Final:   ")); Serial.println(dir_fin);
+      Serial.print(F("Tempo(s):        ")); Serial.println(tempo_trajeto);
+      estadoAtual = estadoT::INDO_PARA_ALVO;
+}
+void teste_dois(String cmd){
+    cmd.trim();
+    pararSolicitado = false;
+  
+      dir_ini = 340;
+      dir_fin = 20;
+      elv_ini = 15;
+      elv_fin = 15;
+      elv_max = 40;
+      tempo_trajeto = 12;
+
+      Serial.println(F(">> Alvo recebido com sucesso!"));
+      Serial.print(F("Direcao Inicial: ")); Serial.println(dir_ini);
+      Serial.print(F("Direcao Final:   ")); Serial.println(dir_fin);
+      Serial.print(F("Tempo(s):        ")); Serial.println(tempo_trajeto);
+      estadoAtual = estadoT::INDO_PARA_ALVO;
+}
+
+void navegarParaAlvo() {
+  float erro = diferencaAngular(azimute_alvo, azimute_estavel);
+}
+
+void inicio_do_alvo(){
+  digitalWrite(enablePin, LOW);
+  long alvo_passos_x =  calcularPassosMaisCurtoX(dir_ini);
+  motorX.moveTo(alvo_passos_x);
+  motorZ.moveTo(-elv_ini * PASSOS_POR_GRAU_Z);
+
+  while(motorX.distanceToGo() != 0 || motorZ.distanceToGo() != 0){
+    if (checarInterrupcao()){
+      motorX.stop();
+      motorZ.stop();
+      pararMotores();
+      return;
+    }
+    motorX.run();
+    motorZ.run();
   }
 }
 
+void final_do_alvo(){
+  digitalWrite(enablePin, LOW);
+  
+  //Proteção de segurança para o tempo
+  if (tempo_trajeto <= 0) tempo_trajeto = 10.0; // Garante que não divide por zero
+  float tempo_fase = tempo_trajeto / 2.0;
 
-...
+  //Calcula a metade do caminho em Azimute 
+  float diff_azimute = diferencaAngular(dir_fin, dir_ini);
+  float  metade_delta_ang = diff_azimute / 2.0;
+
+  //passos em x para cade etapa
+  long delta_passos_fase_x = -round(metade_delta_ang * PASSOS_POR_GRAU_X);
+
+  //velocidade de x
+  float dist_x_grau = abs(metade_delta_ang);
+  long passos_dist_x = dist_x_grau * PASSOS_POR_GRAU_X; 
+  float velocidade_x = (passos_dist_x > 0) ? (passos_dist_x / tempo_fase) : velocidade_motor;
+
+  //subida até elv_max e metade do azimute
+  float dist_z_subida = abs(elv_max - elv_ini);
+  long passos_z = dist_z_subida * PASSOS_POR_GRAU_X;
+  long passos_z_subida = dist_z_subida * PASSOS_POR_GRAU_Z;
+  //velocidade de z
+  float velocidade_z_s = (passos_z_subida > 0) ? (passos_z_subida / tempo_fase) : velocidade_motor;
+
+  motorX.setMaxSpeed(velocidade_x);
+  motorZ.setMaxSpeed(velocidade_z_s);
+
+  //o sinal negativo em X é para girar no sentido correto
+  motorX.move(delta_passos_fase_x);
+  motorZ.moveTo(-elv_max * PASSOS_POR_GRAU_Z);
+
+  Serial.println(F(">> Iniciando Fase 1: Subida ao ápice..."));
+
+  while(motorX.distanceToGo() != 0 || motorZ.distanceToGo() != 0){
+    if (checarInterrupcao()){
+      motorX.stop();
+      motorZ.stop();
+      pararMotores();
+      return;
+    }
+    motorX.run();
+    motorZ.run();
+  }
+
+  //Descida de elv_max até elv_fin e chegada no azimute final
+  float dist_z_descida = abs(elv_fin - elv_max);
+  long passos_z_descida = dist_z_descida * PASSOS_POR_GRAU_Z;
+
+  float velocidade_z_descida = (passos_z_descida > 0) ? (passos_z_descida / tempo_fase) : velocidade_motor;
+  motorZ.setMaxSpeed(velocidade_z_descida);
+
+  motorX.move(delta_passos_fase_x);
+  motorZ.moveTo(-elv_fin * PASSOS_POR_GRAU_Z);
+
+  Serial.println(F(">> Iniciando Fase 2: Descida ao destino final..."));
+
+  while(motorX.distanceToGo() != 0 || motorZ.distanceToGo() != 0){
+    if (checarInterrupcao()){
+      motorX.stop();
+      motorZ.stop();
+      pararMotores();
+      return;
+    }
+    motorX.run();
+    motorZ.run();
+  }
+
+  motorX.setMaxSpeed(velocidade_motor);
+  motorZ.setMaxSpeed(velocidade_motor);
+  Serial.println(F(">> Alvo concluído com sucesso!"));
+}
+//para onde o motor está apontando
+float obterAzimuteMotor(){
+  float angulo = -(float)motorX.currentPosition() / PASSOS_POR_GRAU_X;
+  angulo= fmod(angulo, 360.0);
+  if(angulo < 0) angulo += 360.0;
+  return angulo;
+}
+
+//calcula a coordenada de passos mais curta no círculo (-180 a +180)
+long calcularPassosMaisCurtoX(float azimute_alvo){
+  float atual= obterAzimuteMotor();
+  float menor_erro= diferencaAngular(azimute_alvo, atual); // retorna o menor caminho
+  long delta_passos= -round(menor_erro * PASSOS_POR_GRAU_X); // o menor caminho convertido em passos
+  return motorX.currentPosition() + delta_passos; // possição atual mais a distancia que deve ser percorrida
+}
+
+
